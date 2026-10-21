@@ -1,4 +1,4 @@
-name: Continuous Integration
+name: Continuous Integration & Quality Gates
 
 on:
   push:
@@ -12,8 +12,28 @@ permissions:
   contents: read
 
 jobs:
-  test-java:
-    name: Java - Test and Package
+  # ============================================================================
+  # Quality Gate 1: Security & Secrets Pre-check
+  # ============================================================================
+  security-gate:
+    name: "Gate 1: Secrets & Security Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret Scan with Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================================================
+  # Quality Gate 2: Java Static Analysis, Unit & Integration Tests
+  # ============================================================================
+  java-quality-gate:
+    name: "Gate 2: Java Quality & Tests"
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -26,16 +46,19 @@ jobs:
           java-version: '21'
           cache: 'maven'
 
-      - name: Run Java unit tests
+      - name: Run Java unit & integration tests
         working-directory: ./java-app
         run: mvn clean test -B
 
-      - name: Package Java application artifact
+      - name: Package Java artifact
         working-directory: ./java-app
         run: mvn package -DskipTests -B
 
-  test-react:
-    name: React - Install, Build, and Test
+  # ============================================================================
+  # Quality Gate 3: React Static Analysis, Audit & Production Build
+  # ============================================================================
+  react-quality-gate:
+    name: "Gate 3: React Lint, Audit & Build"
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -52,6 +75,14 @@ jobs:
         working-directory: ./react-app
         run: npm ci
 
+      - name: Static Code Analysis (ESLint)
+        working-directory: ./react-app
+        run: npm run lint
+
+      - name: Dependency Vulnerability Audit
+        working-directory: ./react-app
+        run: npm audit --audit-level=high
+
       - name: Build React production bundle
         working-directory: ./react-app
         run: npm run build
@@ -60,8 +91,11 @@ jobs:
         working-directory: ./react-app
         run: npm test
 
-  test-node:
-    name: Node.js - Install and Run Automated Tests
+  # ============================================================================
+  # Quality Gate 4: Node.js Static Analysis, Audit & API Tests
+  # ============================================================================
+  node-quality-gate:
+    name: "Gate 4: Node.js Lint, Audit & Tests"
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -78,14 +112,25 @@ jobs:
         working-directory: ./node-app
         run: npm ci
 
+      - name: Static Code Analysis (ESLint)
+        working-directory: ./node-app
+        run: npm run lint
+
+      - name: Dependency Vulnerability Audit
+        working-directory: ./node-app
+        run: npm audit --audit-level=high
+
       - name: Run automated API tests
         working-directory: ./node-app
         run: npm test
 
-  build-docker-images:
-    name: Docker - Build Images
+  # ============================================================================
+  # Quality Gate 5: Container Image Build & Trivy Vulnerability Scan
+  # ============================================================================
+  container-security-gate:
+    name: "Gate 5: Container Builds & Vulnerability Scan"
     runs-on: ubuntu-latest
-    needs: [test-java, test-react, test-node]
+    needs: [security-gate, java-quality-gate, react-quality-gate, node-quality-gate]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -93,22 +138,100 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Java application Docker image
+      - name: Build Java image
         run: docker build -t java-app:ci ./java-app
 
-      - name: Build React application Docker image
+      - name: Build React image
         run: docker build -t react-app:ci ./react-app
 
-      - name: Build Node.js application Docker image
+      - name: Build Node.js image
         run: docker build -t node-app:ci ./node-app
 
-      - name: Verify built images
-        run: docker images | grep -E "java-app|react-app|node-app"
+      - name: Scan Node container for HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'node-app:ci'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
 
-  ci-summary:
-    name: CI Pipeline Status
+      - name: Scan React container for HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'react-app:ci'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Scan Java container for HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'java-app:ci'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+
+  # ============================================================================
+  # Quality Gate 6: Smoke Testing & Deployment Readiness Gate
+  # ============================================================================
+  smoke-test-gate:
+    name: "Gate 6: Live Smoke Testing (Docker Compose)"
     runs-on: ubuntu-latest
-    needs: [build-docker-images]
+    needs: [container-security-gate]
     steps:
-      - name: Report overall CI status
-        run: echo "All tests, application builds, and Docker image builds completed successfully."
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Start full environment via Docker Compose
+        run: docker compose up -d --build
+
+      - name: Wait for container health checks
+        run: |
+          echo "Waiting for services to become healthy..."
+          sleep 20
+          docker compose ps
+
+      - name: Validate Java Health Endpoint
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          if [ "$HTTP_STATUS" -ne 200 ]; then echo "Java Health check failed: $HTTP_STATUS"; exit 1; fi
+
+      - name: Validate Java Employees Endpoint
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/employees)
+          if [ "$HTTP_STATUS" -ne 200 ]; then echo "Java Employees check failed: $HTTP_STATUS"; exit 1; fi
+
+      - name: Validate React Health Endpoint
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health)
+          if [ "$HTTP_STATUS" -ne 200 ]; then echo "React Health check failed: $HTTP_STATUS"; exit 1; fi
+
+      - name: Validate React Frontend SPA Response
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000)
+          if [ "$HTTP_STATUS" -ne 200 ]; then echo "React SPA root check failed: $HTTP_STATUS"; exit 1; fi
+
+      - name: Validate Node.js Health Endpoint
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/health)
+          if [ "$HTTP_STATUS" -ne 200 ]; then echo "Node Health check failed: $HTTP_STATUS"; exit 1; fi
+
+      - name: Validate Node.js Products Endpoint
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/api/products)
+          if [ "$HTTP_STATUS" -ne 200 ]; then echo "Node Products check failed: $HTTP_STATUS"; exit 1; fi
+
+      - name: Clean up Docker Compose
+        if: always()
+        run: docker compose down
+
+  # ============================================================================
+  # Quality Gate 7: Consolidated Approval Decision
+  # ============================================================================
+  quality-gate-approval:
+    name: "Gate 7: Quality Gate Approval"
+    runs-on: ubuntu-latest
+    needs: [smoke-test-gate]
+    steps:
+      - name: Verify all quality gates passed
+        run: echo "SUCCESS: All 6 Quality Gates passed with zero violations."

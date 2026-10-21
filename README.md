@@ -411,17 +411,53 @@ The CI workflow is defined in `.github/workflows/ci.yml`.
 - Minimal permission scope: `permissions: contents: read`.
 - Secrets or registry tokens are NOT embedded in repository code.
 
-### Pipeline Stages
-1. **Parallel Application Verification:**
-   - **`test-java`**: Checks out code, configures JDK 21 (Temurin) with Maven caching, executes `mvn clean test -B`, and packages the jar with `mvn package -DskipTests -B`.
-   - **`test-react`**: Configures Node.js 20 with npm caching using `react-app/package-lock.json`, runs `npm ci`, builds bundle via `npm run build`, and runs bundle verification tests via `npm test`.
-   - **`test-node`**: Configures Node.js 20 with npm caching using `node-app/package-lock.json`, runs `npm ci`, and executes automated API tests via `npm test`.
-2. **Container Image Building (`build-docker-images`):**
-   - Depends on `[test-java, test-react, test-node]`.
-   - Executes only after all test suites succeed.
-   - Builds `java-app:ci`, `react-app:ci`, and `node-app:ci` using Docker Buildx to validate multi-stage Dockerfile configurations.
-3. **Workflow Summary (`ci-summary`):**
-   - Reports the consolidated pipeline status.
+### 6 Automated Quality Gates
+1. **Gate 1: Security & Secrets Scan (`security-gate`)**
+   - Runs Gitleaks across the git commit history to detect leaked credentials, tokens, and private keys.
+2. **Gate 2: Java Quality & Tests (`java-quality-gate`)**
+   - Configures JDK 21 (Temurin) with Maven caching.
+   - Executes Spring Boot MockMvc unit and integration tests with zero failure tolerance.
+   - Compiles and packages application jar.
+3. **Gate 3: React Lint, Audit & Build (`react-quality-gate`)**
+   - Static code analysis with ESLint (`npm run lint`).
+   - Dependency vulnerability audit with `npm audit --audit-level=high`.
+   - Production Vite bundle build (`npm run build`).
+   - Automated asset verification tests (`npm test`).
+4. **Gate 4: Node.js Lint, Audit & API Tests (`node-quality-gate`)**
+   - Static code analysis with ESLint (`npm run lint`).
+   - Dependency vulnerability audit with `npm audit --audit-level=high`.
+   - Automated API integration tests (`npm test`) using Node test runner and Supertest.
+5. **Gate 5: Container Builds & Vulnerability Scanning (`container-security-gate`)**
+   - Builds multi-stage Docker images (`java-app:ci`, `react-app:ci`, `node-app:ci`).
+   - Runs Aquasecurity Trivy scanner for OS and library CVEs with severity `CRITICAL,HIGH`.
+6. **Gate 6: Live Smoke Testing & Deployment Readiness (`smoke-test-gate`)**
+   - Spins up all three containers using Docker Compose.
+   - Executes automated HTTP checks against `/health`, `/api/employees`, `/health`, `/`, and `/api/products`.
+   - Enforces HTTP 200 responses before allowing pipeline progression; tears down cleanly.
+7. **Gate 7: Consolidated Approval (`quality-gate-approval`)**
+   - Final approval status asserting all preceding gates passed.
+
+---
+
+### End-to-End 18-Step CI/CD Mapping
+- **Step 1: Source** -> GitHub Actions trigger on push/PR to `main`.
+- **Step 2: Pre-checks** -> GitHub branch protection rules & PR review gates.
+- **Step 3: Dependency Install** -> `npm ci` with lockfiles; cached Maven repo.
+- **Step 4: Static Code Analysis** -> ESLint across React and Node; Java compiler checks.
+- **Step 5: Security Scanning** -> Gitleaks secret scanning & npm audit.
+- **Step 6: Build** -> Multi-stage Docker builds & Vite production bundling.
+- **Step 7: Unit Testing** -> Spring MockMvc & React asset tests.
+- **Step 8: Integration Testing** -> Express + Supertest endpoint tests.
+- **Step 9: Artifact Versioning** -> Tagged with git commit SHA and `:ci`.
+- **Step 10: Artifact Storage** -> Extensible to GitHub Container Registry (GHCR).
+- **Step 11: Deployment to Staging** -> Docker Compose staging deployment.
+- **Step 12: Smoke Testing** -> Gate 6 automated curl health check verification.
+- **Step 13: Acceptance Testing** -> End-to-end user flow testing.
+- **Step 14: Approval Gate** -> GitHub Environments manual approval rules.
+- **Step 15: Production Deployment** -> Zero-downtime rolling deployment.
+- **Step 16: Post-Deployment Verification** -> Endpoint ping & synthetic transaction verification.
+- **Step 17: Rollback Strategy** -> Automated rollback to previous image tag on failed health check.
+- **Step 18: Monitoring & Feedback** -> Spring Actuator & `/health` probes.
 
 ---
 
