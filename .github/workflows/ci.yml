@@ -1,0 +1,114 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test-java:
+    name: Java - Test and Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Run Java unit tests
+        working-directory: ./java-app
+        run: mvn clean test -B
+
+      - name: Package Java application artifact
+        working-directory: ./java-app
+        run: mvn package -DskipTests -B
+
+  test-react:
+    name: React - Install, Build, and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: react-app/package-lock.json
+
+      - name: Install dependencies with reproducible lockfile
+        working-directory: ./react-app
+        run: npm ci
+
+      - name: Build React production bundle
+        working-directory: ./react-app
+        run: npm run build
+
+      - name: Run React tests
+        working-directory: ./react-app
+        run: npm test
+
+  test-node:
+    name: Node.js - Install and Run Automated Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: node-app/package-lock.json
+
+      - name: Install dependencies with reproducible lockfile
+        working-directory: ./node-app
+        run: npm ci
+
+      - name: Run automated API tests
+        working-directory: ./node-app
+        run: npm test
+
+  build-docker-images:
+    name: Docker - Build Images
+    runs-on: ubuntu-latest
+    needs: [test-java, test-react, test-node]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Java application Docker image
+        run: docker build -t java-app:ci ./java-app
+
+      - name: Build React application Docker image
+        run: docker build -t react-app:ci ./react-app
+
+      - name: Build Node.js application Docker image
+        run: docker build -t node-app:ci ./node-app
+
+      - name: Verify built images
+        run: docker images | grep -E "java-app|react-app|node-app"
+
+  ci-summary:
+    name: CI Pipeline Status
+    runs-on: ubuntu-latest
+    needs: [build-docker-images]
+    steps:
+      - name: Report overall CI status
+        run: echo "All tests, application builds, and Docker image builds completed successfully."
