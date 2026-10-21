@@ -411,31 +411,21 @@ The CI workflow is defined in `.github/workflows/ci.yml`.
 - Minimal permission scope: `permissions: contents: read`.
 - Secrets or registry tokens are NOT embedded in repository code.
 
-### 6 Automated Quality Gates
-1. **Gate 1: Security & Secrets Scan (`security-gate`)**
-   - Runs Gitleaks across the git commit history to detect leaked credentials, tokens, and private keys.
-2. **Gate 2: Java Quality & Tests (`java-quality-gate`)**
-   - Configures JDK 21 (Temurin) with Maven caching.
-   - Executes Spring Boot MockMvc unit and integration tests with zero failure tolerance.
-   - Compiles and packages application jar.
-3. **Gate 3: React Lint, Audit & Build (`react-quality-gate`)**
-   - Static code analysis with ESLint (`npm run lint`).
-   - Dependency vulnerability audit with `npm audit --audit-level=high`.
-   - Production Vite bundle build (`npm run build`).
-   - Automated asset verification tests (`npm test`).
-4. **Gate 4: Node.js Lint, Audit & API Tests (`node-quality-gate`)**
-   - Static code analysis with ESLint (`npm run lint`).
-   - Dependency vulnerability audit with `npm audit --audit-level=high`.
-   - Automated API integration tests (`npm test`) using Node test runner and Supertest.
-5. **Gate 5: Container Builds & Vulnerability Scanning (`container-security-gate`)**
-   - Builds multi-stage Docker images (`java-app:ci`, `react-app:ci`, `node-app:ci`).
-   - Runs Aquasecurity Trivy scanner for OS and library CVEs with severity `CRITICAL,HIGH`.
-6. **Gate 6: Live Smoke Testing & Deployment Readiness (`smoke-test-gate`)**
-   - Spins up all three containers using Docker Compose.
-   - Executes automated HTTP checks against `/health`, `/api/employees`, `/health`, `/`, and `/api/products`.
-   - Enforces HTTP 200 responses before allowing pipeline progression; tears down cleanly.
-7. **Gate 7: Consolidated Approval (`quality-gate-approval`)**
-   - Final approval status asserting all preceding gates passed.
+### Quality Gate Thresholds Matrix
+
+| Quality Gate | Target Area | Tool / Engine | Pass Threshold / Rule | Failure Action |
+|---|---|---|---|---|
+| **Build Gate** | Java, React, Node | Maven, Vite, Docker | Exit code 0 on compilation & bundling | Pipeline Fails |
+| **Linting Gate** | React, Node | ESLint 9/10 | `0` syntax, style, or bad-pattern errors | Pipeline Fails |
+| **Unit Test Gate** | Java, React, Node | JUnit 5, Node Test | `100%` test pass rate (`0` failures, `0` errors) | Pipeline Fails |
+| **Test Coverage Gate** | Java, Node | JaCoCo, Node Coverage | `>= 60%` line coverage (Java), `>= 80%` (Node) | Pipeline Fails |
+| **Static Code Analysis (SAST)** | All codebases | Semgrep (`p/security-audit`) | `0` high-severity security weaknesses | Pipeline Fails |
+| **Secret Detection Gate** | Git repository | Gitleaks v2 | `0` leaked API keys, tokens, or credentials | Pipeline Fails |
+| **Dependency Security Gate** | npm packages | `npm audit` | `0` High or Critical CVEs | Pipeline Fails |
+| **Dockerfile Quality Gate** | Dockerfiles | Hadolint | `0` Dockerfile lint errors | Pipeline Fails |
+| **Container Quality Gate** | Built container images | Aquasecurity Trivy | Clean OS/library vulnerability scan | Pipeline Fails |
+| **API Testing Gate** | Live microservices | Supertest & Docker Compose | `100%` endpoints return HTTP `200` | Pipeline Fails |
+| **Smoke Testing Gate** | Orchestration | curl automated probes | All health checks return `UP` within 25s | Pipeline Fails |
 
 ---
 

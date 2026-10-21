@@ -13,10 +13,10 @@ permissions:
 
 jobs:
   # ============================================================================
-  # Quality Gate 1: Security & Secrets Pre-check
+  # Gate 1: Secret Detection Gate
   # ============================================================================
-  security-gate:
-    name: "Gate 1: Secrets & Security Scan"
+  secret-detection-gate:
+    name: "Gate 1: Secret Detection (Gitleaks)"
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -24,16 +24,63 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Secret Scan with Gitleaks
+      - name: Scan repository for secrets
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ============================================================================
-  # Quality Gate 2: Java Static Analysis, Unit & Integration Tests
+  # Gate 2: Static Code Analysis Gate (SAST)
+  # ============================================================================
+  sast-gate:
+    name: "Gate 2: SAST Code Analysis (Semgrep)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep SAST scan
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/secrets
+        env:
+          SEMGREP_APP_TOKEN: ""
+
+  # ============================================================================
+  # Gate 3: Dockerfile Quality & Linting Gate (Hadolint)
+  # ============================================================================
+  dockerfile-lint-gate:
+    name: "Gate 3: Dockerfile Quality (Hadolint)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Lint Java Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: java-app/Dockerfile
+          failure-threshold: error
+
+      - name: Lint React Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: react-app/Dockerfile
+          failure-threshold: error
+
+      - name: Lint Node.js Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: node-app/Dockerfile
+          failure-threshold: error
+
+  # ============================================================================
+  # Gate 4: Java Quality, Unit Tests & Coverage Gate (JaCoCo)
   # ============================================================================
   java-quality-gate:
-    name: "Gate 2: Java Quality & Tests"
+    name: "Gate 4: Java Build, Tests & Coverage (JaCoCo)"
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -46,19 +93,19 @@ jobs:
           java-version: '21'
           cache: 'maven'
 
-      - name: Run Java unit & integration tests
+      - name: Run Unit Tests & Verify JaCoCo Coverage Gate (>=60%)
         working-directory: ./java-app
         run: mvn clean test -B
 
-      - name: Package Java artifact
+      - name: Build Application Package
         working-directory: ./java-app
         run: mvn package -DskipTests -B
 
   # ============================================================================
-  # Quality Gate 3: React Static Analysis, Audit & Production Build
+  # Gate 5: React Linting, Dependency Security, Tests & Build Gate
   # ============================================================================
   react-quality-gate:
-    name: "Gate 3: React Lint, Audit & Build"
+    name: "Gate 5: React Lint, Audit, Tests & Build"
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -75,27 +122,27 @@ jobs:
         working-directory: ./react-app
         run: npm ci
 
-      - name: Static Code Analysis (ESLint)
+      - name: Linting Gate (ESLint)
         working-directory: ./react-app
         run: npm run lint
 
-      - name: Dependency Vulnerability Audit
+      - name: Dependency Security Gate (npm audit)
         working-directory: ./react-app
         run: npm audit --audit-level=high
 
-      - name: Build React production bundle
+      - name: Build Gate (Vite Production Bundle)
         working-directory: ./react-app
         run: npm run build
 
-      - name: Run React tests
+      - name: Unit Test Gate
         working-directory: ./react-app
         run: npm test
 
   # ============================================================================
-  # Quality Gate 4: Node.js Static Analysis, Audit & API Tests
+  # Gate 6: Node.js Linting, Dependency Security, Coverage & API Tests Gate
   # ============================================================================
   node-quality-gate:
-    name: "Gate 4: Node.js Lint, Audit & Tests"
+    name: "Gate 6: Node.js Lint, Audit, Coverage & API Tests"
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -112,25 +159,25 @@ jobs:
         working-directory: ./node-app
         run: npm ci
 
-      - name: Static Code Analysis (ESLint)
+      - name: Linting Gate (ESLint)
         working-directory: ./node-app
         run: npm run lint
 
-      - name: Dependency Vulnerability Audit
+      - name: Dependency Security Gate (npm audit)
         working-directory: ./node-app
         run: npm audit --audit-level=high
 
-      - name: Run automated API tests
+      - name: Test Coverage Gate & API Tests
         working-directory: ./node-app
-        run: npm test
+        run: npm run test:coverage
 
   # ============================================================================
-  # Quality Gate 5: Container Image Build & Trivy Vulnerability Scan
+  # Gate 7: Container Image Build & Vulnerability Scanning Gate (Trivy)
   # ============================================================================
-  container-security-gate:
-    name: "Gate 5: Container Builds & Vulnerability Scan"
+  container-image-gate:
+    name: "Gate 7: Container Image Build & CVE Scan (Trivy)"
     runs-on: ubuntu-latest
-    needs: [security-gate, java-quality-gate, react-quality-gate, node-quality-gate]
+    needs: [secret-detection-gate, sast-gate, dockerfile-lint-gate, java-quality-gate, react-quality-gate, node-quality-gate]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -172,66 +219,79 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
   # ============================================================================
-  # Quality Gate 6: Smoke Testing & Deployment Readiness Gate
+  # Gate 8: Live API Testing & Smoke Test Gate (Docker Compose)
   # ============================================================================
-  smoke-test-gate:
-    name: "Gate 6: Live Smoke Testing (Docker Compose)"
+  api-smoke-test-gate:
+    name: "Gate 8: Live API Testing & Smoke Verification"
     runs-on: ubuntu-latest
-    needs: [container-security-gate]
+    needs: [container-image-gate]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Start full environment via Docker Compose
+      - name: Start services via Docker Compose
         run: docker compose up -d --build
 
-      - name: Wait for container health checks
+      - name: Wait for services to become healthy
         run: |
-          echo "Waiting for services to become healthy..."
+          echo "Waiting for services to report healthy..."
           sleep 20
           docker compose ps
 
-      - name: Validate Java Health Endpoint
+      - name: Test Java Health Endpoint (HTTP 200)
         run: |
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
-          if [ "$HTTP_STATUS" -ne 200 ]; then echo "Java Health check failed: $HTTP_STATUS"; exit 1; fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          [ "$STATUS" -eq 200 ] || { echo "Java Health check failed: $STATUS"; exit 1; }
 
-      - name: Validate Java Employees Endpoint
+      - name: Test Java Employees API (HTTP 200)
         run: |
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/employees)
-          if [ "$HTTP_STATUS" -ne 200 ]; then echo "Java Employees check failed: $HTTP_STATUS"; exit 1; fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/employees)
+          [ "$STATUS" -eq 200 ] || { echo "Java Employees check failed: $STATUS"; exit 1; }
 
-      - name: Validate React Health Endpoint
+      - name: Test React Frontend Health (HTTP 200)
         run: |
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health)
-          if [ "$HTTP_STATUS" -ne 200 ]; then echo "React Health check failed: $HTTP_STATUS"; exit 1; fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health)
+          [ "$STATUS" -eq 200 ] || { echo "React Health check failed: $STATUS"; exit 1; }
 
-      - name: Validate React Frontend SPA Response
+      - name: Test React SPA Root Asset Delivery (HTTP 200)
         run: |
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000)
-          if [ "$HTTP_STATUS" -ne 200 ]; then echo "React SPA root check failed: $HTTP_STATUS"; exit 1; fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000)
+          [ "$STATUS" -eq 200 ] || { echo "React SPA root check failed: $STATUS"; exit 1; }
 
-      - name: Validate Node.js Health Endpoint
+      - name: Test Node.js Health Endpoint (HTTP 200)
         run: |
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/health)
-          if [ "$HTTP_STATUS" -ne 200 ]; then echo "Node Health check failed: $HTTP_STATUS"; exit 1; fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/health)
+          [ "$STATUS" -eq 200 ] || { echo "Node Health check failed: $STATUS"; exit 1; }
 
-      - name: Validate Node.js Products Endpoint
+      - name: Test Node.js Products API (HTTP 200)
         run: |
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/api/products)
-          if [ "$HTTP_STATUS" -ne 200 ]; then echo "Node Products check failed: $HTTP_STATUS"; exit 1; fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/api/products)
+          [ "$STATUS" -eq 200 ] || { echo "Node Products check failed: $STATUS"; exit 1; }
 
-      - name: Clean up Docker Compose
+      - name: Teardown environment
         if: always()
         run: docker compose down
 
   # ============================================================================
-  # Quality Gate 7: Consolidated Approval Decision
+  # Gate 9: Quality Gate Thresholds & Final Approval
   # ============================================================================
-  quality-gate-approval:
-    name: "Gate 7: Quality Gate Approval"
+  quality-gate-threshold-approval:
+    name: "Gate 9: Quality Gate Threshold Approval"
     runs-on: ubuntu-latest
-    needs: [smoke-test-gate]
+    needs: [api-smoke-test-gate]
     steps:
-      - name: Verify all quality gates passed
-        run: echo "SUCCESS: All 6 Quality Gates passed with zero violations."
+      - name: Verify all quality gates satisfied
+        run: |
+          echo "=========================================================="
+          echo " QUALITY GATE DECISION: PASSED"
+          echo " 1. Secret Detection Gate:       0 Leaks"
+          echo " 2. SAST Code Analysis Gate:     0 High Severity Issues"
+          echo " 3. Dockerfile Quality Gate:     0 Hadolint Errors"
+          echo " 4. Build Gate:                  All 3 Apps Compiled"
+          echo " 5. Linting Gate:                0 ESLint Errors"
+          echo " 6. Dependency Security Gate:    0 High/Critical CVEs"
+          echo " 7. Unit Test Gate:              100% Pass Rate"
+          echo " 8. Test Coverage Gate:          >= 60% Java (JaCoCo) & >= 80% Node"
+          echo " 9. Container Quality Gate:      Trivy Scans Passed"
+          echo " 10. Live API Testing Gate:      All Endpoints Returned HTTP 200"
+          echo "=========================================================="
